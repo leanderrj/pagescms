@@ -75,8 +75,8 @@ export const checkEnvVarsPresent = checkEnvRefsPresent;
 const configStorageFromObject = (configObject: any): StorageConfig | null => {
   const block = findStorageBlockInConfig(configObject);
   if (!block) return null;
-  const accessKey = resolveEnvRef(block.accessKeyId);
-  const secretKey = resolveEnvRef(block.secretAccessKey);
+  const accessKey = resolveEnvRef(block.accessKeyId, "credential");
+  const secretKey = resolveEnvRef(block.secretAccessKey, "credential");
   const bucket = resolveEnvRef(block.bucket);
   if (!accessKey || !secretKey || !bucket) return null;
 
