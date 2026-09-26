@@ -17,6 +17,7 @@ import { db } from "@/db";
 import { projectStorageConfigTable } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { getCachedConfig } from "@/lib/config-store";
+import { checkEnvRefsPresent, collectEnvRefs, resolveEnvRef } from "@/lib/env-ref";
 
 export type StorageVisibility = "public" | "private";
 
@@ -33,16 +34,6 @@ export type StorageConfig = {
   thresholdBytes: number;
   maxFileBytes: number; // -1 disables
   publicBaseUrl: string | null;
-};
-
-const ENV_PLACEHOLDER = /^\$\{([A-Z0-9_]+)\}$/;
-
-const resolveEnvValue = (value: string | undefined | null): string => {
-  if (!value) return "";
-  const match = ENV_PLACEHOLDER.exec(value.trim());
-  if (!match) return value;
-  const e = env as unknown as Record<string, string | undefined>;
-  return e[match[1]] ?? "";
 };
 
 export type ConfigStorageBlock = {
@@ -76,36 +67,22 @@ export const findStorageBlockInConfig = (configObject: any): ConfigStorageBlock 
   return null;
 };
 
-export const collectEnvVarRefs = (block: ConfigStorageBlock | null | undefined): string[] => {
-  if (!block) return [];
-  const seen = new Set<string>();
-  for (const key of Object.keys(block) as (keyof ConfigStorageBlock)[]) {
-    const value = block[key];
-    if (typeof value !== "string") continue;
-    const match = ENV_PLACEHOLDER.exec(value.trim());
-    if (match) seen.add(match[1]);
-  }
-  return Array.from(seen);
-};
+export const collectEnvVarRefs = (block: ConfigStorageBlock | null | undefined): string[] =>
+  block ? collectEnvRefs(Object.values(block)) : [];
 
-export const checkEnvVarsPresent = (names: string[]): Record<string, boolean> => {
-  const e = env as unknown as Record<string, string | undefined>;
-  const out: Record<string, boolean> = {};
-  for (const name of names) out[name] = !!e[name];
-  return out;
-};
+export const checkEnvVarsPresent = checkEnvRefsPresent;
 
 const configStorageFromObject = (configObject: any): StorageConfig | null => {
   const block = findStorageBlockInConfig(configObject);
   if (!block) return null;
-  const accessKey = resolveEnvValue(block.accessKeyId);
-  const secretKey = resolveEnvValue(block.secretAccessKey);
-  const bucket = resolveEnvValue(block.bucket);
+  const accessKey = resolveEnvRef(block.accessKeyId, "credential");
+  const secretKey = resolveEnvRef(block.secretAccessKey, "credential");
+  const bucket = resolveEnvRef(block.bucket);
   if (!accessKey || !secretKey || !bucket) return null;
 
-  let endpoint = resolveEnvValue(block.endpoint);
+  let endpoint = resolveEnvRef(block.endpoint);
   if (!endpoint && block.provider === "r2") {
-    const accountId = resolveEnvValue(block.accountId);
+    const accountId = resolveEnvRef(block.accountId);
     if (!accountId) return null;
     endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
   }
@@ -114,16 +91,16 @@ const configStorageFromObject = (configObject: any): StorageConfig | null => {
   return {
     source: "config",
     endpoint,
-    region: resolveEnvValue(block.region) || "auto",
+    region: resolveEnvRef(block.region) || "auto",
     bucket,
     accessKey,
     secretKey,
     forcePathStyle: block.forcePathStyle ?? true,
-    prefix: resolveEnvValue(block.prefix) || "",
+    prefix: resolveEnvRef(block.prefix) || "",
     visibility: block.visibility ?? "public",
     thresholdBytes: block.thresholdBytes ?? 26214400,
     maxFileBytes: block.maxFileBytes ?? -1,
-    publicBaseUrl: resolveEnvValue(block.publicUrl) || null,
+    publicBaseUrl: resolveEnvRef(block.publicUrl) || null,
   };
 };
 
