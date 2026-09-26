@@ -1,9 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useConfig } from "@/contexts/config-context";
 import { getParentPath, getRelativePath, joinPathSegments, normalizePath } from "@/lib/utils/file";
 import { getSchemaByName } from "@/lib/schema";
+import { isLocalizedFilesSchema } from "@/lib/localization";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { requireApiSuccess } from "@/lib/api-client";
 import {
   AlertDialog,
@@ -71,6 +74,12 @@ export function FileOptions({
 
   const [newPath, setNewPath] = useState(relativePath);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
+  const hasTranslations = useMemo(
+    () => (type === "collection" || type === "file") && !!name && isLocalizedFilesSchema(getSchemaByName(config.object, name)),
+    [type, name, config.object],
+  );
+  const [deleteTranslations, setDeleteTranslations] = useState(false);
+  const deleteTranslationsId = useId();
 
   const handleConfirmDelete = async () => {
     try {
@@ -81,6 +90,7 @@ export function FileOptions({
             type: (type === "collection" || type === "file") ? "content" : type
           });
           if (name) params.set("name", name);
+          if (hasTranslations && deleteTranslations) params.set("translations", "true");
 
           const response = await fetch(`/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/files/${encodeURIComponent(normalizedPath)}?${params.toString()}`, {
             method: "DELETE",
@@ -145,6 +155,16 @@ export function FileOptions({
               <AlertDialogTitle>Are you sure you want to delete this file?</AlertDialogTitle>
               <AlertDialogDescription>This will premanently delete &quot;{path}&quot;.</AlertDialogDescription>
             </AlertDialogHeader>
+            {hasTranslations && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={deleteTranslationsId}
+                  checked={deleteTranslations}
+                  onCheckedChange={(checked) => setDeleteTranslations(checked === true)}
+                />
+                <Label htmlFor={deleteTranslationsId}>Also delete its translations</Label>
+              </div>
+            )}
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction onClick={handleConfirmDelete}>Delete</AlertDialogAction>

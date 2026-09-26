@@ -3,7 +3,8 @@ import { createOctokitInstance } from "@/lib/utils/octokit";
 import { isContentOperationAllowed } from "@/lib/operations";
 import { writeFns } from "@/fields/registry";
 import { configVersion, parseConfig, normalizeConfig } from "@/lib/config";
-import { inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
+import { inferLocalizedFileInfo, isLocalizedFilesSchema, isPathAllowedForSchema } from "@/lib/localization";
+import { commitFiles } from "@/lib/github-commit";
 import { stringify, parse } from "@/lib/serialization";
 import { deepMap, generateZodSchema, getSchemaByName, sanitizeObject } from "@/lib/schema";
 import { getConfig, updateConfig } from "@/lib/config-store";
@@ -476,6 +477,7 @@ export async function DELETE(
     const sha = searchParams.get("sha");
     const type = searchParams.get("type");
     const name = searchParams.get("name");
+    const withTranslations = searchParams.get("translations") === "true";
 
     if (!type || !["content", "media"].includes(type)) throw new Error(`"type" is required and must be set to "content" or "media".`);
     if (!name && type === "content") throw new Error(`"name" is required.`);
@@ -503,7 +505,7 @@ export async function DELETE(
         schemaCommitTemplates = schema?.commit?.templates;
         schemaCommitIdentity = schema?.commit?.identity;
         
-        if (!normalizedPath.startsWith(schema.path)) throw new Error(`Invalid path "${params.path}" for ${type} "${name}".`);
+        if (!isPathAllowedForSchema(normalizedPath, schema, config.object?.localization)) throw new Error(`Invalid path "${params.path}" for ${type} "${name}".`);
         
         if (schema.subfolders === false && getParentPath(normalizedPath) !== schema.path) {
           throw new Error(`Subfolders are not allowed for collection "${name}".`);
@@ -543,28 +545,85 @@ export async function DELETE(
       : undefined;
     
     const octokit = createOctokitInstance(token);
+    const commitMessage = resolveCommitMessage({
+      configObject: config.object,
+      templatesOverride: schemaCommitTemplates,
+      action: "delete",
+      tokens: buildCommitTokens({
+        action: "delete",
+        owner: params.owner,
+        repo: params.repo,
+        branch: params.branch,
+        path: normalizedPath,
+        contentName: name || undefined,
+        user: user.email || user.name || String(user.id || ""),
+        userName: committer?.name,
+        userEmail: committer?.email,
+      }),
+    });
+
+    // Delete the entry and all its existing translations in one commit.
+    if (withTranslations && type === "content" && isLocalizedFilesSchema(schema)) {
+      const localized = inferLocalizedFileInfo(normalizedPath, schema, config.object?.localization);
+      const paths = Array.from(new Set([normalizedPath, ...Object.values(localized?.siblings ?? {})]));
+      const shas = await Promise.all(paths.map(async (filePath) => {
+        try {
+          const { data } = await octokit.rest.repos.getContent({
+            owner: params.owner,
+            repo: params.repo,
+            path: filePath,
+            ref: params.branch,
+          });
+          return !Array.isArray(data) && data.type === "file" ? data.sha : null;
+        } catch (error: any) {
+          if (error?.status === 404) return null;
+          throw error;
+        }
+      }));
+      if (shas[0] !== sha) {
+        throw createHttpError("File has changed since you last loaded it. Please refresh the page and try again.", 409);
+      }
+      const existingPaths = paths.filter((_, index) => shas[index] !== null);
+
+      const result = await commitFiles({
+        token,
+        owner: params.owner,
+        repo: params.repo,
+        branch: params.branch,
+        message: commitMessage,
+        changes: existingPaths.map((filePath) => ({ path: filePath, delete: true as const })),
+        committer,
+      });
+
+      for (const filePath of existingPaths) {
+        await updateFileCache("collection", params.owner, params.repo, params.branch, {
+          type: "delete",
+          path: filePath,
+          commit: { sha: result.commitSha, timestamp: result.timestamp },
+        });
+      }
+
+      const translationCount = existingPaths.length - 1;
+      return Response.json({
+        status: "success",
+        message: translationCount > 0
+          ? `File "${normalizedPath}" and ${translationCount} translation(s) deleted successfully.`
+          : `File "${normalizedPath}" deleted successfully.`,
+        data: {
+          sha: result.commitSha,
+          name: getFileName(normalizedPath),
+          path: normalizedPath,
+        }
+      });
+    }
+
     const response = await octokit.rest.repos.deleteFile({
       owner: params.owner,
       repo: params.repo,
       branch: params.branch,
       path: normalizedPath,
       sha: sha,
-      message: resolveCommitMessage({
-        configObject: config.object,
-        templatesOverride: schemaCommitTemplates,
-        action: "delete",
-        tokens: buildCommitTokens({
-          action: "delete",
-          owner: params.owner,
-          repo: params.repo,
-          branch: params.branch,
-          path: normalizedPath,
-          contentName: name || undefined,
-          user: user.email || user.name || String(user.id || ""),
-          userName: committer?.name,
-          userEmail: committer?.email,
-        }),
-      }),
+      message: commitMessage,
       committer,
     });
 

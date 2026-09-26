@@ -1,9 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useConfig } from "@/contexts/config-context";
 import { getRelativePath, joinPathSegments, normalizePath } from "@/lib/utils/file";
 import { getSchemaByName } from "@/lib/schema";
+import { isLocalizedFilesSchema } from "@/lib/localization";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { requireApiSuccess } from "@/lib/api-client";
 import {
   Dialog,
@@ -48,6 +51,10 @@ export function FileRename({
   const relativePath = useMemo(() => getRelativePath(normalizedPath, rootPath), [normalizedPath, rootPath]);
 
   const [newRelativePath, setNewRelativePath] = useState(relativePath);
+  const hasTranslations = type !== "media" && isLocalizedFilesSchema(schema);
+  // Translations are linked by path, so renaming them too is the default.
+  const [renameTranslations, setRenameTranslations] = useState(true);
+  const renameTranslationsId = useId();
 
   const handleRename = async () => {
     try {
@@ -62,6 +69,7 @@ export function FileRename({
               type: (type === "collection" || type === "file") ? "content" : type,
               name,
               newPath,
+              translations: hasTranslations && renameTranslations,
             }),
           });
           const data = await requireApiSuccess<any>(response, "Failed to rename file");
@@ -96,6 +104,16 @@ export function FileRename({
           defaultValue={relativePath}
           onChange={(e) => setNewRelativePath(e.target.value)}
         />
+        {hasTranslations && (
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id={renameTranslationsId}
+              checked={renameTranslations}
+              onCheckedChange={(checked) => setRenameTranslations(checked === true)}
+            />
+            <Label htmlFor={renameTranslationsId}>Also rename its translations</Label>
+          </div>
+        )}
         <DialogFooter className="max-sm:gap-y-2">
           <DialogClose asChild>
             <Button type="button" variant="outline">Cancel</Button>

@@ -457,6 +457,7 @@ export function Entry({
                 type: "content",
                 name,
                 newPath,
+                translations: isLocalizedFilesSchema(schema),
               }),
             },
           );

@@ -9,6 +9,7 @@ import { createHttpError, toErrorResponse } from "@/lib/api-error";
 import { getBranchHeadSha, setBranchHeadSha } from "@/lib/github-cache-file";
 import { buildCommitTokens, resolveCommitIdentity, resolveCommitMessage } from "@/lib/commit-message";
 import { requireApiUserSession } from "@/lib/session-server";
+import { inferLocalizedFileInfo, isLocalizedFilesSchema, isPathAllowedForSchema } from "@/lib/localization";
 
 /**
  * Renames a file in a GitHub repository.
@@ -68,8 +69,8 @@ export async function POST(
 
         if (schema.type === "file") throw new Error(`Renaming content of type "file" isn't allowed.`);
         
-        if (!normalizedPath.startsWith(schema.path)) throw new Error(`Invalid path "${params.path}" for ${data.type} "${data.name}".`);
-        if (!normalizedNewPath.startsWith(schema.path)) throw new Error(`Invalid path "${data.newPath}" for ${data.type} "${data.name}".`);
+        if (!isPathAllowedForSchema(normalizedPath, schema, config.object?.localization)) throw new Error(`Invalid path "${params.path}" for ${data.type} "${data.name}".`);
+        if (!isPathAllowedForSchema(normalizedNewPath, schema, config.object?.localization)) throw new Error(`Invalid path "${data.newPath}" for ${data.type} "${data.name}".`);
 
         if (getFileExtension(normalizedPath) !== (schema.extension ?? "")) throw new Error(`Invalid extension "${getFileExtension(normalizedPath)}" for ${data.type} "${data.name}".`);
         if (getFileExtension(normalizedNewPath) !== (schema.extension ?? "")) throw new Error(`Invalid extension "${getFileExtension(normalizedNewPath)}" for ${data.type} "${data.name}".`);
@@ -110,13 +111,26 @@ export async function POST(
         }
       : undefined;
     
+    // Rename every existing translation along with the entry so they stay
+    // linked by path.
+    let moves: Record<string, string> = { [normalizedPath]: normalizedNewPath };
+    if (data.translations === true && data.type === "content" && isLocalizedFilesSchema(schema)) {
+      const current = inferLocalizedFileInfo(normalizedPath, schema, config.object?.localization);
+      const next = inferLocalizedFileInfo(normalizedNewPath, schema, config.object?.localization);
+      if (!current || !next || current.locale !== next.locale) {
+        throw createHttpError(`Renaming "${normalizedPath}" to "${normalizedNewPath}" would change its locale.`, 400);
+      }
+      moves = Object.fromEntries(
+        Object.entries(current.siblings).map(([locale, siblingPath]) => [siblingPath, next.siblings[locale]]),
+      );
+    }
+
     const response = await githubRenameFile(
       token,
       params.owner,
       params.repo,
       params.branch,
-      normalizedPath,
-      normalizedNewPath,
+      moves,
       {
         configObject: config.object,
         templatesOverride: schemaCommitTemplates,
@@ -127,29 +141,35 @@ export async function POST(
     );
 
     // Update the cache with the rename operation
-    await updateFileCache(
-      data.type === 'content' ? 'collection' : 'media',
-      params.owner,
-      params.repo,
-      params.branch,
-      {
-        type: 'rename',
-        path: normalizedPath,
-        newPath: normalizedNewPath,
-        commit: {
-          sha: response.sha,
-          timestamp: Date.now()
+    for (const [oldPath, newPath] of Object.entries(response.moved)) {
+      await updateFileCache(
+        data.type === 'content' ? 'collection' : 'media',
+        params.owner,
+        params.repo,
+        params.branch,
+        {
+          type: 'rename',
+          path: oldPath,
+          newPath,
+          commit: {
+            sha: response.sha,
+            timestamp: Date.now()
+          }
         }
-      }
-    );
+      );
+    }
+
+    const translationCount = Object.keys(response.moved).length - 1;
 
     // TODO: remove success message in backend 
     return Response.json({
       status: "success",
-      message: `File "${normalizedPath}" moved to "${normalizedNewPath}".`,
+      message: translationCount > 0
+        ? `File "${normalizedPath}" and ${translationCount} translation(s) moved to "${normalizedNewPath}".`
+        : `File "${normalizedPath}" moved to "${normalizedNewPath}".`,
       data: {
-        path: response?.path,
-        newPath: response?.newPath,
+        path: normalizedPath,
+        newPath: response.moved[normalizedPath],
       }
     });
   } catch (error: any) {
@@ -170,8 +190,7 @@ const githubRenameFile = async (
   owner: string,
   repo: string,
   branch: string,
-  path: string,
-  newPath: string,
+  moves: Record<string, string>,
   options?: {
     configObject?: Record<string, any>;
     templatesOverride?: Record<string, string>;
@@ -193,12 +212,25 @@ const githubRenameFile = async (
     recursive: "true",
   });
   const tree = treeData.tree;
+  const [path, newPath] = Object.entries(moves)[0];
+
+  // Only move files that exist; a missing translation is simply skipped.
+  const existingPaths = new Set(tree.filter(item => item.type === "blob").map(item => item.path));
+  if (!existingPaths.has(path)) throw createHttpError(`File "${path}" not found.`, 404);
+  const moved = new Map(
+    Object.entries(moves).filter(([fromPath]) => existingPaths.has(fromPath)),
+  );
+  for (const [fromPath, toPath] of moved) {
+    if (existingPaths.has(toPath) && !moved.has(toPath)) {
+      throw createHttpError(`File "${toPath}" already exists (renaming "${fromPath}").`, 409);
+    }
+  }
 
   // Step 3: Create a new tree with the updated path
   const newTree = tree
     .filter(item => item.type !== 'tree')
     .map(item => ({
-      path: item.path === path ? newPath : item.path,
+      path: (item.path && moved.get(item.path)) || item.path,
       mode: item.mode as "100644" | "100755" | "040000" | "160000" | "120000",
       type: item.type as "commit" | "tree" | "blob",
       sha: item.sha,
@@ -249,7 +281,6 @@ const githubRenameFile = async (
 
   return {
     sha: commitSha,
-    path: path,
-    newPath: newPath,
+    moved: Object.fromEntries(moved),
   };
 };
