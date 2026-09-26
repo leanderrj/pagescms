@@ -38,6 +38,35 @@ interface MediaUploadDropZoneProps {
   className?: string;
 }
 
+// Keep each request under typical serverless body limits (e.g. 4.5 MB on
+// Vercel); base64 adds ~33% to the file size.
+const MAX_BATCH_BYTES = 3 * 1024 * 1024;
+const MAX_BATCH_FILES = 20;
+
+const groupUploadBatches = <T extends { file: File }>(items: T[]): T[][] => {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+
+  for (const item of items) {
+    const bytes = Math.ceil(item.file.size * 4 / 3);
+    if (bytes > MAX_BATCH_BYTES) {
+      batches.push([item]);
+      continue;
+    }
+    if (current.length > 0 && (currentBytes + bytes > MAX_BATCH_BYTES || current.length >= MAX_BATCH_FILES)) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(item);
+    currentBytes += bytes;
+  }
+  if (current.length > 0) batches.push(current);
+
+  return batches;
+};
+
 function MediaUploadRoot({ children, path, onUpload, media, extensions, multiple, rename, disabled = false }: MediaUploadProps) {
   const { config } = useConfig();
   if (!config) throw new Error(`Configuration not found.`);
@@ -64,54 +93,68 @@ function MediaUploadRoot({ children, path, onUpload, media, extensions, multiple
   }, [extensions, configMedia?.extensions]);
 
   const handleFiles = useCallback(async (files: File[]) => {
-    try {
-      for (const file of files) {
-        const uploadFilename = getUploadFileName(
-          file.name,
-          rename ?? configMedia?.rename,
-        );
+    const readAsBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).replace(/^(.+,)/, ""));
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
 
-        const uploadPromise = (async () => {
-          const content = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const base64Content = (reader.result as string).replace(/^(.+,)/, "");
-              resolve(base64Content);
-            };
-            reader.onerror = () => reject(new Error("Failed to read file"));
-            reader.readAsDataURL(file);
-          });
+    const uploadFile = async (file: File, filename: string): Promise<FileSaveData[]> => {
+      const content = await readAsBase64(file);
+      const fullPath = joinPathSegments([path ?? "", filename]);
+      const response = await fetch(`/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/files/${encodeURIComponent(fullPath)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "media",
+          name: configMedia.name,
+          content,
+        }),
+      });
+      const data = await requireApiSuccess<any>(response, "Failed to upload file");
+      return [data.data as FileSaveData];
+    };
 
-          const fullPath = joinPathSegments([path ?? "", uploadFilename]);
-          const response = await fetch(`/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/files/${encodeURIComponent(fullPath)}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: "media",
-              name: configMedia.name,
-              content,
-            }),
-          });
+    const uploadBatch = async (batch: { file: File; filename: string }[]): Promise<FileSaveData[]> => {
+      const contents = await Promise.all(batch.map(({ file }) => readAsBase64(file)));
+      const response = await fetch(`/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/media/${encodeURIComponent(configMedia.name)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: path ?? "",
+          files: batch.map(({ filename }, index) => ({ name: filename, content: contents[index] })),
+        }),
+      });
+      const data = await requireApiSuccess<any>(response, "Failed to upload files");
+      return data.data as FileSaveData[];
+    };
 
-          const data = await requireApiSuccess<any>(
-            response,
-            "Failed to upload file",
-          );
+    const batches = groupUploadBatches(files.map((file) => ({
+      file,
+      filename: getUploadFileName(file.name, rename ?? configMedia?.rename),
+    })));
 
-          return data.data as FileSaveData;
-        })();
+    // Batches run one after another: each one is a commit on the same branch.
+    for (const batch of batches) {
+      const uploadPromise = batch.length === 1
+        ? uploadFile(batch[0].file, batch[0].filename)
+        : uploadBatch(batch);
 
-        await toast.promise(uploadPromise, {
-          loading: `Uploading ${file.name}`,
-          success: (savedEntry) => {
-            onUpload?.(savedEntry);
-            return `Uploaded ${file.name}`;
-          },
-          error: (error: unknown) => error instanceof Error ? error.message : "Upload failed",
-        });
+      toast.promise(uploadPromise, {
+        loading: batch.length === 1 ? `Uploading ${batch[0].file.name}` : `Uploading ${batch.length} files`,
+        success: (savedEntries) => {
+          savedEntries.forEach((entry) => onUpload?.(entry));
+          return batch.length === 1 ? `Uploaded ${batch[0].file.name}` : `Uploaded ${batch.length} files`;
+        },
+        error: (error: unknown) => error instanceof Error ? error.message : "Upload failed",
+      });
+
+      try {
+        await uploadPromise;
+      } catch (error) {
+        console.error(error);
       }
-    } catch (error) {
-      console.error(error);
     }
   }, [config, path, configMedia?.name, configMedia?.rename, onUpload, rename]);
 

@@ -153,6 +153,32 @@ const getUploadFileName = (
   return getSafeUploadName(filename);
 };
 
+const splitFilename = (filename: string) => {
+  const lastDotIndex = filename.lastIndexOf(".");
+  return lastDotIndex > 0
+    ? { stem: filename.slice(0, lastDotIndex), extension: filename.slice(lastDotIndex + 1) }
+    : { stem: filename, extension: "" };
+};
+
+// Same "-N" suffix scheme as single-file uploads, applied to the whole batch.
+const getAvailableFileNames = (names: string[], existingNames: Set<string>) => {
+  const taken = new Set(existingNames);
+  return names.map((name) => {
+    if (!taken.has(name)) {
+      taken.add(name);
+      return name;
+    }
+    const { stem, extension } = splitFilename(name);
+    for (let i = 1; ; i++) {
+      const candidate = extension ? `${stem}-${i}.${extension}` : `${stem}-${i}`;
+      if (!taken.has(candidate)) {
+        taken.add(candidate);
+        return candidate;
+      }
+    }
+  });
+};
+
 const sortFiles = (data: Record<string, any>[]): Record<string, any>[] => {
   return data.sort((a, b) => {
     if (a.type === b.type) {
@@ -175,6 +201,7 @@ export {
   generateRandomUploadName,
   getSafeUploadName,
   getUploadFileName,
+  getAvailableFileNames,
   sortFiles,
   extensionCategories,
   serializedTypes
