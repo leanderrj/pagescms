@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { projectAnalyticsConfigTable } from "@/db/schema";
 import { getCachedConfig } from "@/lib/config-store";
+import { checkEnvRefsPresent, collectEnvRefs, resolveEnvRef } from "@/lib/env-ref";
 
 export type ResolvedAnalytics = {
   source: "d1" | "config";
@@ -12,15 +12,10 @@ export type ResolvedAnalytics = {
   honorDnt: boolean;
 };
 
-const ENV_PLACEHOLDER = /^\$\{([A-Z0-9_]+)\}$/;
-
-const resolveEnvValue = (value: string | undefined | null): string => {
-  if (!value) return "";
-  const match = ENV_PLACEHOLDER.exec(value.trim());
-  if (!match) return value;
-  const e = env as unknown as Record<string, string | undefined>;
-  return e[match[1]] ?? "";
-};
+// Both values end up in a public script, so anything that isn't shaped like a
+// real ID is dropped rather than echoed.
+const GA4_ID = /^G-[A-Z0-9]{4,20}$/;
+const CF_BEACON_TOKEN = /^[0-9a-f]{32}$/i;
 
 const fromD1 = async (
   owner: string,
@@ -65,24 +60,10 @@ export const findAnalyticsBlockInConfig = (configObject: any): AnalyticsBlock | 
   return block as AnalyticsBlock;
 };
 
-export const collectAnalyticsEnvVarRefs = (block: AnalyticsBlock | null | undefined): string[] => {
-  if (!block) return [];
-  const seen = new Set<string>();
-  for (const key of ["ga4MeasurementId", "cfBeaconToken"] as const) {
-    const value = block[key];
-    if (typeof value !== "string") continue;
-    const match = ENV_PLACEHOLDER.exec(value.trim());
-    if (match) seen.add(match[1]);
-  }
-  return Array.from(seen);
-};
+export const collectAnalyticsEnvVarRefs = (block: AnalyticsBlock | null | undefined): string[] =>
+  block ? collectEnvRefs([block.ga4MeasurementId, block.cfBeaconToken]) : [];
 
-export const checkAnalyticsEnvVarsPresent = (names: string[]): Record<string, boolean> => {
-  const e = env as unknown as Record<string, string | undefined>;
-  const out: Record<string, boolean> = {};
-  for (const name of names) out[name] = !!e[name];
-  return out;
-};
+export const checkAnalyticsEnvVarsPresent = checkEnvRefsPresent;
 
 const fromConfig = async (
   owner: string,
@@ -93,8 +74,10 @@ const fromConfig = async (
   const block = findAnalyticsBlockInConfig(cached?.object);
   if (!block) return null;
 
-  const ga4 = resolveEnvValue(block.ga4MeasurementId) || null;
-  const cf = resolveEnvValue(block.cfBeaconToken) || null;
+  const ga4Raw = resolveEnvRef(block.ga4MeasurementId);
+  const cfRaw = resolveEnvRef(block.cfBeaconToken);
+  const ga4 = GA4_ID.test(ga4Raw) ? ga4Raw : null;
+  const cf = CF_BEACON_TOKEN.test(cfRaw) ? cfRaw : null;
   if (!ga4 && !cf) return null;
 
   return {
