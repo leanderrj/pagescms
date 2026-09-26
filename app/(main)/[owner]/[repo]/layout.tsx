@@ -5,7 +5,8 @@ import { RepoProvider } from "@/contexts/repo-context";
 import { getServerSession } from "@/lib/session-server";
 import { getRepoSnapshot } from "@/lib/github-cache-file";
 import { GithubAuthExpired } from "@/components/github-auth-expired";
-import { isGithubAuthError } from "@/lib/github-auth";
+import { GithubUnavailable } from "@/components/github-unavailable";
+import { isGithubAuthError, isTransientGithubError } from "@/lib/github-auth";
 import { invalidateSessionForGithubAuthError } from "@/lib/github-auth-server";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import Link from "next/link";
@@ -93,7 +94,14 @@ export default async function Layout({
             </EmptyContent>
           </Empty>
         ); 
+      case 429:
+        return <GithubUnavailable rateLimited />;
       default:
+        // Transient GitHub failure (5xx / network): degrade gracefully and let
+        // the user retry rather than crashing into the RSC error boundary.
+        if (isTransientGithubError(error)) {
+          return <GithubUnavailable />;
+        }
         throw error;
     }
   }

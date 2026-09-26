@@ -6,6 +6,8 @@ import { RepoLayout } from "@/components/repo/repo-layout";
 import { getServerSession } from "@/lib/session-server";
 import { getToken } from "@/lib/token";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { GithubUnavailable } from "@/components/github-unavailable";
+import { isTransientGithubError } from "@/lib/github-auth";
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 
@@ -88,6 +90,11 @@ export default async function Layout({
           </EmptyContent>
         </Empty>
       );
+    } else if (error.status === 429 || isTransientGithubError(error)) {
+      // Transient GitHub failure (rate limit / 5xx / network): degrade
+      // gracefully and let the user retry instead of crashing the render.
+      console.warn(`repo_layout.config transient error for ${owner}/${repo}@${decodedBranch}: status=${error?.status} message=${error?.message}`);
+      errorMessage = <GithubUnavailable rateLimited={error.status === 429} />;
     } else {
       throw error;
     }

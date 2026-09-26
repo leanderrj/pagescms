@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { cacheFileMetaTable, cacheFileTable } from "@/db/schema";
 import { createOctokitInstance } from "@/lib/utils/octokit";
+import { isTransientGithubError } from "@/lib/github-auth";
 import { getParentPath } from "@/lib/utils/file";
 import { getCacheFileMeta, upsertCacheFileMeta } from "@/lib/github-cache-meta";
 import {
@@ -100,11 +101,22 @@ const getBranchHeadInfo = async (
 
   const job = (async () => {
     const octokit = createOctokitInstance(token);
-    const response = await octokit.rest.repos.getBranch({
-      owner,
-      repo,
-      branch,
-    });
+    let response;
+    try {
+      response = await octokit.rest.repos.getBranch({
+        owner,
+        repo,
+        branch,
+      });
+    } catch (error) {
+      // Stale-while-error: serve the last known head on a transient failure.
+      const stale = branchHeadCache.get(key);
+      if (stale && isTransientGithubError(error)) {
+        console.warn(`[github-cache] branch head transient error for ${owner}/${repo}@${branch}; serving stale.`, error);
+        return { sha: stale.sha, timestamp: stale.timestamp };
+      }
+      throw error;
+    }
     const timestampValue =
       response.data.commit.commit?.committer?.date ??
       response.data.commit.commit?.author?.date ??
@@ -167,10 +179,23 @@ const getRepoSnapshot = async (
 
   const job = (async () => {
     const octokit = createOctokitInstance(token);
-    const [repoResponse, firstBranchesResponse] = await Promise.all([
-      octokit.rest.repos.get({ owner, repo }),
-      octokit.rest.repos.listBranches({ owner, repo, page: 1, per_page: 100 }),
-    ]);
+    let repoResponse;
+    let firstBranchesResponse;
+    try {
+      [repoResponse, firstBranchesResponse] = await Promise.all([
+        octokit.rest.repos.get({ owner, repo }),
+        octokit.rest.repos.listBranches({ owner, repo, page: 1, per_page: 100 }),
+      ]);
+    } catch (error) {
+      // Stale-while-error: on a transient GitHub failure, keep serving the last
+      // known snapshot rather than crashing the repo layout render.
+      const stale = repoSnapshotCache.get(key);
+      if (stale && isTransientGithubError(error)) {
+        console.warn(`[github-cache] repo snapshot transient error for ${owner}/${repo}; serving stale.`, error);
+        return stale.value;
+      }
+      throw error;
+    }
 
     const branches = [...firstBranchesResponse.data];
     let page = 2;

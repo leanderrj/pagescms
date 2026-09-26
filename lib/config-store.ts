@@ -7,6 +7,7 @@ import { db } from "@/db";
 import { configTable } from "@/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { createOctokitInstance } from "@/lib/utils/octokit";
+import { isTransientGithubError } from "@/lib/github-auth";
 import { configVersion, normalizeConfig, parseConfig } from "@/lib/config";
 
 const getConfigFromDb = async (
@@ -190,7 +191,18 @@ const getConfig = async (
       const token = await resolveToken();
       if (!token) throw new Error("Token not found");
 
-      const latest = await fetchConfigFromGithub(owner, repo, branch, token);
+      let latest;
+      try {
+        latest = await fetchConfigFromGithub(owner, repo, branch, token);
+      } catch (error) {
+        // Stale-while-error: keep serving the cached config on a transient
+        // GitHub failure rather than crashing the branch layout render.
+        if (cachedConfig && isTransientGithubError(error)) {
+          console.warn(`[config-store] transient error fetching .pages.yml for ${owner}/${repo}@${branch}; serving cached config.`, error);
+          return cachedConfig;
+        }
+        throw error;
+      }
       if (!latest) return null;
 
       const nextConfig: Config = {
@@ -261,7 +273,17 @@ const getConfig = async (
     const token = await requireToken();
     if (!token) throw new Error("Token not found");
 
-    const latest = await fetchConfigFromGithub(owner, repo, branch, token);
+    let latest;
+    try {
+      latest = await fetchConfigFromGithub(owner, repo, branch, token);
+    } catch (error) {
+      // Stale-while-error: keep serving cached config on a transient failure.
+      if (cachedConfig && isTransientGithubError(error)) {
+        console.warn(`[config-store] transient error fetching .pages.yml for ${owner}/${repo}@${branch}; serving cached config.`, error);
+        return cachedConfig;
+      }
+      throw error;
+    }
     if (!latest) {
       if (cachedConfig) {
         await db.delete(configTable).where(
