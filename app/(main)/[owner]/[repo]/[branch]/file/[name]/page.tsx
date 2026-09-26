@@ -28,7 +28,7 @@ export default function Page({
       <DocumentTitle
         title={formatRepoBranchTitle(schema.label || schema.name, config.owner, config.repo, config.branch)}
       />
-      <Entry name={resolvedParams.name} path={schema.path} title={schema.label || schema.name}/>
+      <Entry key={`file:${resolvedParams.name}`} name={resolvedParams.name} path={schema.path} title={schema.label || schema.name}/>
     </>
   );
 }
