@@ -6,6 +6,7 @@ import { Loader as LucideLoader } from "lucide-react";
 import { useConfig } from "@/contexts/config-context";
 import { normalizePath } from "@/lib/utils/file";
 import { getSchemaByName, initializeState } from "@/lib/schema";
+import { getLocalizedSchemaFields } from "@/lib/localization";
 import { requireApiSuccess } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -54,7 +55,7 @@ const EmptyCreate = ({
           content = [];
         } else if (schema.fields && schema.fields.length) {
           // TODO: this will still not pass validation for patterns/required fields
-          content = initializeState(schema.fields, {});
+          content = initializeState(getLocalizedSchemaFields(schema, config.object?.localization) ?? schema.fields, {});
         }
       } else {
         path = `${schema.path}/.gitkeep`;

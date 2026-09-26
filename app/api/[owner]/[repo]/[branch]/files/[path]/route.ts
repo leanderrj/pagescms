@@ -3,7 +3,7 @@ import { createOctokitInstance } from "@/lib/utils/octokit";
 import { isContentOperationAllowed } from "@/lib/operations";
 import { writeFns } from "@/fields/registry";
 import { configVersion, parseConfig, normalizeConfig } from "@/lib/config";
-import { inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
+import { getLocalizedSchemaFields, inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
 import { stringify, parse } from "@/lib/serialization";
 import { deepMap, generateZodSchema, getSchemaByName, sanitizeObject } from "@/lib/schema";
 import { getConfig, updateConfig } from "@/lib/config-store";
@@ -88,6 +88,7 @@ export async function POST(
           if (serializedTypes.includes(schema.format) && schema.fields) {
             let contentFields;
             let contentObject;
+            const schemaFields = getLocalizedSchemaFields(schema, config?.object?.localization) ?? schema.fields;
 
             // Wrapping things in listWrapper to deal with lists at the root
             if (schema.list) {
@@ -96,11 +97,11 @@ export async function POST(
                 name: "listWrapper",
                 type: "object",
                 list: true,
-                fields: schema.fields
+                fields: schemaFields
               }]
             } else {
               contentObject = data.content;
-              contentFields = schema.fields;
+              contentFields = schemaFields;
             }
             
             // Use mapBlocks to convert config blocks array to a map

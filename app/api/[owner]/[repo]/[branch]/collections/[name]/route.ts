@@ -11,6 +11,10 @@ import {
   isLocalizedFilesSchema,
   isPathAllowedForSchema,
   isPathWithinLocalizedRoot,
+  getDefaultLocale,
+  getLocalizedSchemaFields,
+  isLocalizedFieldsSchema,
+  pickLocalizedValues,
 } from "@/lib/localization";
 import { normalizePath } from "@/lib/utils/file";
 import { getCollectionCache } from "@/lib/github-cache-file";
@@ -103,7 +107,7 @@ export async function GET(
     }
     
     if (entries) {
-      data = parseContents(entries, schema, config, fields);
+      data = parseContents(entries, schema, config, fields, locale);
       
       // If this is a search request, filter the contents
       if (type === "search" && query) {
@@ -156,6 +160,7 @@ const parseContents = (
   schema: Record<string, any>,
   config: Record<string, any>,
   selectedFields?: string[],
+  locale?: string,
 ): {
   contents: Record<string, any>[],
   errors: string[]
@@ -175,7 +180,12 @@ const parseContents = (
       if (serializedTypes.includes(schema.format) && schema.fields) {
         // If we are dealing with a serialized format and we have fields defined
         try {
-          const parsedObject = parse(item.content, { format: schema.format, delimiters: schema.delimiters });
+          const parsedObject = localizeListedContent(
+            parse(item.content, { format: schema.format, delimiters: schema.delimiters }),
+            schema,
+            config,
+            locale,
+          );
           if (Array.isArray(selectedFields) && selectedFields.length > 0) {
             const requestedFieldPaths = selectedFields
               .filter((fieldPath) => fieldPath !== "path")
@@ -285,4 +295,18 @@ const setByPath = (target: Record<string, any>, path: string, value: any) => {
   }
 
   cursor[segments[segments.length - 1]] = value;
+};
+
+// Listings show localized fields in a single locale (the requested one, else
+// the default) so columns, sorting and search work on plain values.
+const localizeListedContent = (
+  content: Record<string, any>,
+  schema: Record<string, any>,
+  config: Record<string, any>,
+  locale?: string,
+) => {
+  if (!isLocalizedFieldsSchema(schema)) return content;
+  const fields = getLocalizedSchemaFields(schema, config.object?.localization) ?? [];
+  const defaultLocale = getDefaultLocale(schema.localization, config.object?.localization);
+  return pickLocalizedValues(content, fields, locale || defaultLocale || "", defaultLocale);
 };

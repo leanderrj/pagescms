@@ -14,4 +14,7 @@ export type Field = {
   fields?: Field[];
   blocks?: Field[];
   blockKey?: string;
+  localized?: boolean | null;
+  // Set on the per-locale object built from a `localized` field.
+  __localized?: boolean;
 };

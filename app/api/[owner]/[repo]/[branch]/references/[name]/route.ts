@@ -1,6 +1,7 @@
 export const maxDuration = 30;
 
 import { type NextRequest } from "next/server";
+import { getDefaultLocale, getLocalizedSchemaFields, isLocalizedFieldsSchema, pickLocalizedValues } from "@/lib/localization";
 import { parse } from "@/lib/serialization";
 import { readFns } from "@/fields/registry";
 import {
@@ -161,7 +162,15 @@ const parseReferenceItems = (
 
       if (serializedTypes.includes(schema.format) && schema.fields) {
         try {
-          const parsedObject = parse(item.content, { format: schema.format, delimiters: schema.delimiters });
+          let parsedObject = parse(item.content, { format: schema.format, delimiters: schema.delimiters });
+          if (isLocalizedFieldsSchema(schema)) {
+            const defaultLocale = getDefaultLocale(schema.localization, config.object?.localization);
+            parsedObject = pickLocalizedValues(
+              parsedObject,
+              getLocalizedSchemaFields(schema, config.object?.localization) ?? [],
+              defaultLocale || "",
+            );
+          }
           contentObject = pickAndTransformFields(parsedObject, schema.fields, selectedFields, config);
         } catch (error: any) {
           console.error(`Error parsing frontmatter for file "${item.path}": ${error.message}`);

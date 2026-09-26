@@ -4,7 +4,7 @@ import { readFns } from "@/fields/registry";
 import { deepMap, getSchemaByName } from "@/lib/schema";
 import { parse } from "@/lib/serialization";
 import { getConfig } from "@/lib/config-store";
-import { inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
+import { getLocalizedSchemaFields, inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
 import { getFileExtension, normalizePath } from "@/lib/utils/file";
 import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
@@ -188,6 +188,7 @@ const parseContent = (
     try {
       contentObject = parse(content, { format: schema.format, delimiters: schema.delimiters });
       // We resort to the same trick as with the client, wrapping things in a listWrapper object if we're dealing with a list at the root
+      const schemaFields = getLocalizedSchemaFields(schema, config.object?.localization) ?? schema.fields;
       let entryFields;
       if (schema.list) {
         contentObject = { listWrapper: contentObject };
@@ -195,10 +196,10 @@ const parseContent = (
           name: "listWrapper",
           type: "object",
           list: true,
-          fields: schema.fields
+          fields: schemaFields
         }]
       } else {
-        entryFields = schema.fields;
+        entryFields = schemaFields;
       }
 
       contentObject = deepMap(

@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useConfig } from "@/contexts/config-context";
 import { parseAndValidateConfig } from "@/lib/config";
-import { getDefaultLocale, getLocaleCodes, getLocaleOptions, isLocalizedFilesSchema } from "@/lib/localization";
+import { getDefaultLocale, getLocaleCodes, getLocaleOptions, getLocalizedSchemaFields, isLocalizedFieldsSchema, isLocalizedFilesSchema } from "@/lib/localization";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { resolveContentOperations } from "@/lib/operations";
 import { requireApiSuccess } from "@/lib/api-client";
 import { getSchemaActions } from "@/lib/actions";
@@ -163,6 +164,20 @@ export function Entry({
   const [filenameValue, setFilenameValue] = useState("");
   const [isFilenameUnlocked, setIsFilenameUnlocked] = useState(false);
   
+  const schemaFields = useMemo(
+    () => getLocalizedSchemaFields(schema, config.object?.localization) ?? schema?.fields,
+    [config.object, schema],
+  );
+  const fieldLocaleOptions = useMemo(
+    () => isLocalizedFieldsSchema(schema)
+      ? getLocaleOptions(schema?.localization, config.object?.localization)
+      : [],
+    [config.object, schema],
+  );
+  const [activeFieldLocale, setActiveFieldLocale] = useState<string | undefined>();
+  const displayedFieldLocale = activeFieldLocale
+    ?? (isLocalizedFieldsSchema(schema) ? getDefaultLocale(schema?.localization, config.object?.localization) : undefined);
+
   const entryFields = useMemo(() => {
     return !schema?.fields || schema.fields.length === 0
       ? [{
@@ -185,10 +200,10 @@ export function Entry({
             label: false,
             type: "object",
             list: true,
-            fields: schema.fields
+            fields: schemaFields
           }]
-        : schema.fields;
-  }, [schema, entry, path, showFilenameField]);
+        : schemaFields;
+  }, [schema, schemaFields, entry, path, showFilenameField]);
 
   const entryContentObject = useMemo(() => {
     return path
@@ -839,6 +854,26 @@ export function Entry({
   ), [breadcrumbNode, canDelete, canRename, filenameChanged, filenameFieldMode, filenameValue, handleDelete, handleRename, hasRegisteredChanges, headerActionsNode, headerMeta, historyData, isBusy, isFilenameUnlocked, isFormDirty, isLoading, name, path, schemaType, sha, showFilenameField, showHeaderActions]);
 
   const localeSystemField = useMemo(() => {
+    if (fieldLocaleOptions.length > 1 && displayedFieldLocale) {
+      return {
+        label: "Locale",
+        node: (
+          <Select value={displayedFieldLocale} onValueChange={setActiveFieldLocale}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {fieldLocaleOptions.map((locale) => (
+                <SelectItem key={locale.code} value={locale.code}>
+                  {locale.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ),
+      };
+    }
+
     if (effectiveLocaleCodes.length === 0 || !effectiveLocale) return null;
 
     const localeInput = (
@@ -883,7 +918,7 @@ export function Entry({
         localeInput
       ),
     };
-  }, [config.branch, config.owner, config.repo, effectiveLocale, effectiveLocaleCodes.length, entry?.localization, localeOptions, name, path, schemaType, sourcePath]);
+  }, [config.branch, config.owner, config.repo, displayedFieldLocale, effectiveLocale, effectiveLocaleCodes.length, entry?.localization, fieldLocaleOptions, localeOptions, name, path, schemaType, sourcePath]);
 
   useRepoHeader({ header: headerNode });
 
@@ -997,6 +1032,8 @@ export function Entry({
         fields={entryFields}
         contentObject={entryContentObject}
         onSubmit={onSubmit}
+        activeLocale={displayedFieldLocale}
+        onLocaleError={setActiveFieldLocale}
         systemFields={[localeSystemField].filter(Boolean) as Array<{ label: string; node: React.ReactNode; readonly?: boolean }>}
         filePath={
           showFilenameField

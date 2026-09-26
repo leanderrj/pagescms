@@ -1024,6 +1024,33 @@ const SingleField = ({
 
 SingleField.displayName = "SingleField";
 
+// First locale with a validation error in a localized field, preferring the
+// active one, so the form can switch to where the error is visible.
+const findLocalizedErrorLocale = (
+  fields: Field[],
+  errors: Record<string, any> | undefined,
+  activeLocale: string,
+): string | undefined => {
+  if (!errors || typeof errors !== "object") return undefined;
+  for (const field of fields) {
+    const fieldErrors = errors[field.name];
+    if (!fieldErrors) continue;
+    if (field.__localized) {
+      const locales = (field.fields || [])
+        .map((child) => child.name)
+        .filter((locale) => fieldErrors[locale]);
+      if (locales.length > 0) return locales.includes(activeLocale) ? activeLocale : locales[0];
+    } else if (field.type === "object" && field.fields) {
+      const items = field.list ? Object.values(fieldErrors) : [fieldErrors];
+      for (const item of items) {
+        const locale = findLocalizedErrorLocale(field.fields, item as Record<string, any>, activeLocale);
+        if (locale) return locale;
+      }
+    }
+  }
+  return undefined;
+};
+
 const EntryForm = ({
   fields,
   contentObject,
@@ -1032,6 +1059,8 @@ const EntryForm = ({
   systemFields,
   onDirtyChange,
   onChangeRegistered,
+  activeLocale,
+  onLocaleError,
 }: {
   fields: Field[];
   contentObject?: Record<string, unknown>;
@@ -1040,6 +1069,8 @@ const EntryForm = ({
   systemFields?: Array<{ label: string; node: React.ReactNode; readonly?: boolean }>;
   onDirtyChange?: (isDirty: boolean) => void;
   onChangeRegistered?: () => void;
+  activeLocale?: string;
+  onLocaleError?: (locale: string) => void;
 }) => {
   const zodSchema = useMemo(() => {
     return generateZodSchema(fields);
@@ -1086,16 +1117,31 @@ const EntryForm = ({
     ): React.ReactNode[] => {
       return fields.map((field) => {
         if (!field || field.hidden) return null;
-        const effectiveField =
+        const baseField =
           inheritedReadonly && !field.readonly
             ? { ...field, readonly: true, __inheritedReadonly: true }
             : field;
-        const currentFieldName = parentName
-          ? `${parentName}.${effectiveField.name}`
-          : effectiveField.name;
-        const currentFieldKey = keyPrefix
-          ? `${keyPrefix}.${effectiveField.name}`
-          : currentFieldName;
+        const baseFieldName = parentName
+          ? `${parentName}.${baseField.name}`
+          : baseField.name;
+        const baseFieldKey = keyPrefix
+          ? `${keyPrefix}.${baseField.name}`
+          : baseFieldName;
+
+        // Localized fields only show the value for the active locale.
+        const localeField = baseField.__localized && activeLocale
+          ? baseField.fields?.find((child) => child.name === activeLocale)
+          : undefined;
+        const effectiveField: FieldWithReadonlyMeta = localeField
+          ? {
+              ...localeField,
+              label: baseField.label,
+              description: baseField.description,
+              readonly: localeField.readonly || baseField.readonly,
+            }
+          : baseField;
+        const currentFieldName = localeField ? `${baseFieldName}.${localeField.name}` : baseFieldName;
+        const currentFieldKey = localeField ? `${baseFieldKey}.${localeField.name}` : baseFieldKey;
 
         if (
           effectiveField.list === true ||
@@ -1126,7 +1172,7 @@ const EntryForm = ({
         );
       });
     },
-    [onChangeRegistered],
+    [activeLocale, onChangeRegistered],
   );
 
   const runBeforeValidationHooks = useCallback(async () => {
@@ -1144,9 +1190,15 @@ const EntryForm = ({
     [form, onSubmit],
   );
 
-  const handleError = () => {
+  const handleError = useCallback((errors: Record<string, any>) => {
+    const errorLocale = activeLocale ? findLocalizedErrorLocale(fields, errors, activeLocale) : undefined;
+    if (errorLocale && errorLocale !== activeLocale) {
+      onLocaleError?.(errorLocale);
+      toast.error(`Please fix the errors in "${errorLocale}" before saving.`, { duration: 5000 });
+      return;
+    }
     toast.error("Please fix the errors before saving.", { duration: 5000 });
-  };
+  }, [activeLocale, fields, onLocaleError]);
 
   const handleFormSubmit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1154,7 +1206,7 @@ const EntryForm = ({
       await runBeforeValidationHooks();
       await form.handleSubmit(handleSubmit, handleError)(event);
     },
-    [form, handleSubmit, runBeforeValidationHooks],
+    [form, handleError, handleSubmit, runBeforeValidationHooks],
   );
 
   return (

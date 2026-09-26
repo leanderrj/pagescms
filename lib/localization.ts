@@ -5,6 +5,7 @@ import {
   joinPathSegments,
   normalizePath,
 } from "@/lib/utils/file";
+import type { Field } from "@/types/field";
 
 type LocaleEntry = {
   code: string;
@@ -361,8 +362,94 @@ const isPathAllowedForSchema = (
     : localized.basePath === schemaPath || localized.basePath.startsWith(`${schemaPath}/`);
 };
 
+const isLocalizedFieldsSchema = (
+  schema?: LocalizationAwareSchema | null,
+): boolean => schema?.localization?.scheme === "fields";
+
+// A `localized` field is stored as a map of locale -> value. Expanding it into
+// an object with one sub-field per locale lets validation, read/write
+// transforms and the form handle it like any other object. Only the default
+// locale keeps `required`, so missing translations don't block saving.
+const expandLocalizedFields = (
+  fields: Field[],
+  localeCodes: string[],
+  defaultLocale: string,
+): Field[] => fields.map((field) => {
+  if (field.localized) {
+    return {
+      name: field.name,
+      label: field.label,
+      description: field.description,
+      type: "object",
+      hidden: field.hidden,
+      readonly: field.readonly,
+      __localized: true,
+      fields: localeCodes.map((locale) => ({
+        ...field,
+        name: locale,
+        localized: false,
+        description: undefined,
+        required: locale === defaultLocale ? field.required : false,
+      })),
+    };
+  }
+  if (field.type === "object" && field.fields) {
+    return { ...field, fields: expandLocalizedFields(field.fields, localeCodes, defaultLocale) };
+  }
+  if (field.type === "block" && field.blocks) {
+    return {
+      ...field,
+      blocks: field.blocks.map((block) => block.fields
+        ? { ...block, fields: expandLocalizedFields(block.fields, localeCodes, defaultLocale) }
+        : block),
+    };
+  }
+  return field;
+});
+
+const getLocalizedSchemaFields = (
+  schema: (LocalizationAwareSchema & { fields?: Field[] }) | null | undefined,
+  rootLocalization?: RootLocalization,
+): Field[] | undefined => {
+  if (!schema?.fields || !isLocalizedFieldsSchema(schema)) return schema?.fields;
+  const localeCodes = getLocaleCodes(schema.localization, rootLocalization);
+  const defaultLocale = getDefaultLocale(schema.localization, rootLocalization);
+  if (localeCodes.length === 0 || !defaultLocale) return schema.fields;
+  return expandLocalizedFields(schema.fields, localeCodes, defaultLocale);
+};
+
+// Replace every localized value with its value in `locale` (falling back to
+// `fallbackLocale`), e.g. for listing entries in a collection.
+const pickLocalizedValues = (
+  content: Record<string, any>,
+  fields: Field[],
+  locale: string,
+  fallbackLocale?: string,
+): Record<string, any> => {
+  if (!content || typeof content !== "object") return content;
+  const result: Record<string, any> = { ...content };
+  for (const field of fields) {
+    const value = content[field.name];
+    if (value === undefined || value === null) continue;
+    if (field.__localized) {
+      result[field.name] = typeof value === "object" && !Array.isArray(value)
+        ? (value[locale] ?? (fallbackLocale ? value[fallbackLocale] : undefined))
+        : value;
+    } else if (field.type === "object" && field.fields) {
+      result[field.name] = field.list && Array.isArray(value)
+        ? value.map((item) => pickLocalizedValues(item, field.fields!, locale, fallbackLocale))
+        : pickLocalizedValues(value, field.fields, locale, fallbackLocale);
+    }
+  }
+  return result;
+};
+
 export {
+  expandLocalizedFields,
+  getLocalizedSchemaFields,
+  isLocalizedFieldsSchema,
   isLocalizedFilesSchema,
+  pickLocalizedValues,
   isPathAllowedForSchema,
   isPathWithinLocalizedRoot,
   getLocaleCodes,
